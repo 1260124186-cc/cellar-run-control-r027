@@ -159,6 +159,7 @@ domain rules, and snapshot storage.
 - `internal/domain`: entities, validation, state transitions, and metrics.
 - `internal/service`: use-case orchestration and revision coordination.
 - `internal/storage`: snapshot repository, atomic replacement, and locking.
+- `internal/audit`: local append-only audit trail of successful writes.
 - `internal/httpapi`: routing, strict JSON decoding, error mapping, and health.
 - `internal/workflowcheck`: real HTTP workflow checks used by the executable.
 
@@ -189,6 +190,12 @@ updated aggregate and its version. A failed write returns:
 Write requests may include `X-Expected-Version`. When present, the service
 rejects a stale write instead of overwriting newer state.
 
+`GET /v1/audit-entries` is a read-only view of successful business writes. It
+filters by `target_id`, `target_kind`, `operation`, and inclusive RFC3339
+`from`/`to` bounds. Entries record operation, target, before/after versions,
+recorded time, and a non-sensitive result summary; request payload fields are
+never stored. Audit failures never change the success semantics of a write.
+
 `GET /healthz` returns process health and the current snapshot revision.
 
 ## Persistence And Concurrency
@@ -201,6 +208,14 @@ published in memory unless persistence succeeds.
 Reads use copied values and never expose repository-owned maps or slices. The
 default address is `127.0.0.1:8088`, the request body limit is 1 MiB, and all
 workflow checks use temporary directories.
+
+The data directory also contains the append-only `audit.jsonl` trail. Audit
+entries are appended under the snapshot write lock immediately after the
+business commit, so their sequence matches commit order. Each operation batch
+is one `O_APPEND` write followed by `fsync`; sequence numbers are contiguous
+from 1 and cannot interleave or go missing under concurrency. Startup reloads
+and validates the trail, and corruption or a sequence gap stops the process
+before serving.
 
 ## Validation Plan
 

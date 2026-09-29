@@ -147,7 +147,11 @@ func (s *Store) View(visitor func(domain.Snapshot) error) error {
 	return visitor(copied)
 }
 
-func (s *Store) Update(expected *int64, mutate func(*domain.Snapshot) error) error {
+func (s *Store) Update(
+	expected *int64,
+	mutate func(*domain.Snapshot) error,
+	afterCommit func(),
+) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -165,9 +169,19 @@ func (s *Store) Update(expected *int64, mutate func(*domain.Snapshot) error) err
 		return domain.NewError(domain.CodeStorage, err.Error())
 	}
 	s.snapshot = candidate
+	// The write is already durable and published. The callback performs
+	// best-effort follow-up work (the audit trail) that must observe the same
+	// global commit order; its own failures are handled by the callback and
+	// cannot undo or fail the business write.
+	if afterCommit != nil {
+		afterCommit()
+	}
 	return nil
 }
 
-func (s *Store) Execute(mutator func(*domain.Snapshot) error) error {
-	return s.Update(nil, mutator)
+// Execute serializes a business mutation and its post-commit work behind the
+// store write lock, so the durable commit order matches the order of any
+// follow-up ordered effects.
+func (s *Store) Execute(mutator func(*domain.Snapshot) error, afterCommit func()) error {
+	return s.Update(nil, mutator, afterCommit)
 }

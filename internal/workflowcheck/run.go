@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/audit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/clock"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/httpapi"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/service"
@@ -22,7 +23,12 @@ func Run(name string) error {
 	if err != nil {
 		return err
 	}
-	app := service.New(store, clock.System{})
+	auditLog, err := audit.Open(dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = auditLog.Close() }()
+	app := service.New(store, clock.System{}, auditLog)
 	server := httptest.NewServer(httpapi.NewHandler(app))
 	defer server.Close()
 	api := newClient(server.URL)

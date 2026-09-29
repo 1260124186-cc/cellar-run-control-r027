@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/audit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
 )
 
@@ -42,7 +43,14 @@ func (s *Service) CreateFormula(input CreateFormulaInput) (domain.Formula, error
 		snapshot.Formulas[formula.ID] = formula
 		snapshot.NameIndex[nameKey] = formula.ID
 		return nil
-	})
+	}, s.auditCommit(audit.OpFormulaCreate, now, func() []audit.Target {
+		return []audit.Target{{
+			Kind:         audit.KindFormula,
+			ID:           formula.ID,
+			AfterVersion: formula.Version,
+			Summary:      formulaSummary(formula),
+		}}
+	}))
 	if err != nil {
 		return domain.Formula{}, err
 	}
@@ -53,7 +61,9 @@ func (s *Service) SetFormulaSteps(
 	id string,
 	input SetFormulaStepsInput,
 ) (domain.Formula, error) {
+	recordedAt := s.clock.Now()
 	var updated domain.Formula
+	var beforeVersion int64
 	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
 		formula, ok := snapshot.Formulas[id]
 		if !ok {
@@ -62,6 +72,7 @@ func (s *Service) SetFormulaSteps(
 		if err := s.checkExpected(formula.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
+		beforeVersion = formula.Version
 		if err := formula.SetSteps(input.Steps); err != nil {
 			return err
 		}
@@ -69,7 +80,15 @@ func (s *Service) SetFormulaSteps(
 		snapshot.Formulas[id] = formula
 		updated = formula.Clone()
 		return nil
-	})
+	}, s.auditCommit(audit.OpFormulaSetSteps, recordedAt, func() []audit.Target {
+		return []audit.Target{{
+			Kind:          audit.KindFormula,
+			ID:            id,
+			BeforeVersion: &beforeVersion,
+			AfterVersion:  updated.Version,
+			Summary:       formulaSummary(updated),
+		}}
+	}))
 	if err != nil {
 		return domain.Formula{}, err
 	}
@@ -77,7 +96,9 @@ func (s *Service) SetFormulaSteps(
 }
 
 func (s *Service) ApproveFormula(id string, input VersionInput) (domain.Formula, error) {
+	recordedAt := s.clock.Now()
 	var updated domain.Formula
+	var beforeVersion int64
 	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
 		formula, ok := snapshot.Formulas[id]
 		if !ok {
@@ -86,13 +107,22 @@ func (s *Service) ApproveFormula(id string, input VersionInput) (domain.Formula,
 		if err := s.checkExpected(formula.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
+		beforeVersion = formula.Version
 		if err := formula.Approve(s.clock.Now()); err != nil {
 			return err
 		}
 		snapshot.Formulas[id] = formula
 		updated = formula.Clone()
 		return nil
-	})
+	}, s.auditCommit(audit.OpFormulaApprove, recordedAt, func() []audit.Target {
+		return []audit.Target{{
+			Kind:          audit.KindFormula,
+			ID:            id,
+			BeforeVersion: &beforeVersion,
+			AfterVersion:  updated.Version,
+			Summary:       formulaSummary(updated),
+		}}
+	}))
 	if err != nil {
 		return domain.Formula{}, err
 	}
@@ -100,7 +130,9 @@ func (s *Service) ApproveFormula(id string, input VersionInput) (domain.Formula,
 }
 
 func (s *Service) RetireFormula(id string, input VersionInput) (domain.Formula, error) {
+	recordedAt := s.clock.Now()
 	var updated domain.Formula
+	var beforeVersion int64
 	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
 		formula, ok := snapshot.Formulas[id]
 		if !ok {
@@ -116,13 +148,22 @@ func (s *Service) RetireFormula(id string, input VersionInput) (domain.Formula, 
 					"formula is attached to a run that is still open")
 			}
 		}
+		beforeVersion = formula.Version
 		if err := formula.Retire(s.clock.Now()); err != nil {
 			return err
 		}
 		snapshot.Formulas[id] = formula
 		updated = formula.Clone()
 		return nil
-	})
+	}, s.auditCommit(audit.OpFormulaRetire, recordedAt, func() []audit.Target {
+		return []audit.Target{{
+			Kind:          audit.KindFormula,
+			ID:            id,
+			BeforeVersion: &beforeVersion,
+			AfterVersion:  updated.Version,
+			Summary:       formulaSummary(updated),
+		}}
+	}))
 	if err != nil {
 		return domain.Formula{}, err
 	}

@@ -3,6 +3,7 @@ package service
 import (
 	"sort"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/audit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
 )
 
@@ -33,7 +34,14 @@ func (s *Service) CreateVessel(input CreateVesselInput) (domain.Vessel, error) {
 		snapshot.Vessels[vessel.ID] = vessel
 		snapshot.VesselIndex[vessel.Code] = vessel.ID
 		return nil
-	})
+	}, s.auditCommit(audit.OpVesselCreate, now, func() []audit.Target {
+		return []audit.Target{{
+			Kind:         audit.KindVessel,
+			ID:           vessel.ID,
+			AfterVersion: vessel.Version,
+			Summary:      vesselSummary(vessel),
+		}}
+	}))
 	if err != nil {
 		return domain.Vessel{}, err
 	}
@@ -81,7 +89,9 @@ func (s *Service) FinishCleaning(
 	id string,
 	input FinishCleaningInput,
 ) (domain.Vessel, error) {
+	recordedAt := s.clock.Now()
 	var updated domain.Vessel
+	var beforeVersion int64
 	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
 		vessel, ok := snapshot.Vessels[id]
 		if !ok {
@@ -103,13 +113,22 @@ func (s *Service) FinishCleaning(
 			return domain.NewError(domain.CodeRunState,
 				"associated run is still open")
 		}
+		beforeVersion = vessel.Version
 		if err := vessel.FinishCleaning(s.clock.Now()); err != nil {
 			return err
 		}
 		snapshot.Vessels[id] = vessel
 		updated = vessel
 		return nil
-	})
+	}, s.auditCommit(audit.OpVesselFinishCleaning, recordedAt, func() []audit.Target {
+		return []audit.Target{{
+			Kind:          audit.KindVessel,
+			ID:            id,
+			BeforeVersion: &beforeVersion,
+			AfterVersion:  updated.Version,
+			Summary:       vesselSummary(updated),
+		}}
+	}))
 	if err != nil {
 		return domain.Vessel{}, err
 	}
@@ -117,7 +136,9 @@ func (s *Service) FinishCleaning(
 }
 
 func (s *Service) RetireVessel(id string, input VersionInput) (domain.Vessel, error) {
+	recordedAt := s.clock.Now()
 	var updated domain.Vessel
+	var beforeVersion int64
 	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
 		vessel, ok := snapshot.Vessels[id]
 		if !ok {
@@ -126,13 +147,22 @@ func (s *Service) RetireVessel(id string, input VersionInput) (domain.Vessel, er
 		if err := s.checkExpected(vessel.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
+		beforeVersion = vessel.Version
 		if err := vessel.Retire(s.clock.Now()); err != nil {
 			return err
 		}
 		snapshot.Vessels[id] = vessel
 		updated = vessel
 		return nil
-	})
+	}, s.auditCommit(audit.OpVesselRetire, recordedAt, func() []audit.Target {
+		return []audit.Target{{
+			Kind:          audit.KindVessel,
+			ID:            id,
+			BeforeVersion: &beforeVersion,
+			AfterVersion:  updated.Version,
+			Summary:       vesselSummary(updated),
+		}}
+	}))
 	if err != nil {
 		return domain.Vessel{}, err
 	}

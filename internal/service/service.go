@@ -3,6 +3,7 @@ package service
 import (
 	"strings"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/audit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/clock"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/storage"
@@ -11,13 +12,14 @@ import (
 type Service struct {
 	store *storage.Store
 	clock clock.Clock
+	audit *audit.Log
 }
 
-func New(store *storage.Store, timeSource clock.Clock) *Service {
+func New(store *storage.Store, timeSource clock.Clock, auditLog *audit.Log) *Service {
 	if timeSource == nil {
 		timeSource = clock.System{}
 	}
-	return &Service{store: store, clock: timeSource}
+	return &Service{store: store, clock: timeSource, audit: auditLog}
 }
 
 func (s *Service) Revision() int64 {

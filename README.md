@@ -3,12 +3,13 @@
 Cellar Run Control is a local Go HTTP service for coordinating a small
 production cellar. It keeps formula approval, vessel availability, active
 fermentation runs, gravity observations, conditioning, completion metrics, and
-vessel cleaning in one deterministic process.
+vessel cleaning in one deterministic process. Every successful business write
+is recorded in a local append-only audit trail that survives restarts.
 
-This repository is a healthy initialization baseline. It has no intentional
-defects and no automated test suite. Tests are intentionally deferred to a
-later engineering task; the production workflow checks in this repository
-remain available for immediate build and behavior verification.
+The repository is a healthy initialization baseline. It has no intentional
+defects. Focused tests cover the audit trail and its HTTP surface; the
+production workflow checks remain available for immediate build and behavior
+verification.
 
 ## Requirements
 
@@ -36,7 +37,8 @@ The default address is `127.0.0.1:8088`. The default snapshot directory is
 Environment variables:
 
 - `CELLAR_CONTROL_ADDR`: HTTP listen address.
-- `CELLAR_CONTROL_DATA_DIR`: directory containing `state.json`.
+- `CELLAR_CONTROL_DATA_DIR`: directory containing `state.json` and
+  `audit.jsonl`.
 
 Example:
 
@@ -50,6 +52,7 @@ go run ./cmd/fermentctl serve
 
 ```text
 cmd/fermentctl                 service and workflow-check executable
+internal/audit                 append-only JSON-lines audit trail
 internal/clock                 time boundary
 internal/config                environment configuration
 internal/domain                entities, validation, transitions, metrics
@@ -94,6 +97,29 @@ Run workflow:
 - `POST /v1/runs/{id}/complete`
 - `POST /v1/runs/{id}/abort`
 
+Audit (read-only):
+
+- `GET /v1/audit-entries`
+
+The audit endpoint returns entries of successful business writes only. Query
+parameters are all optional and combine with AND semantics:
+
+- `target_id`: exact aggregate identifier;
+- `target_kind`: `formula`, `vessel`, or `run`;
+- `operation`: one of the audit operations below;
+- `from`, `to`: inclusive RFC3339 time bounds on the recorded time.
+
+Audit operations are `formula_create`, `formula_set_steps`,
+`formula_approve`, `formula_retire`, `vessel_create`,
+`vessel_finish_cleaning`, `vessel_retire`, `run_create`, `run_reserve`,
+`run_start`, `run_append_observation`, `run_begin_conditioning`,
+`run_complete`, and `run_abort`.
+
+Each entry carries a globally contiguous `sequence`, `operation`,
+`target_kind`, `target_id`, optional `before_version`, `after_version`,
+`recorded_at`, and a `summary` of the resulting aggregate state. Request
+payload fields (names, notes, measured values, codes) are never recorded.
+
 Writes accept an optional `X-Expected-Version` header. Errors use a stable
 shape:
 
@@ -133,6 +159,24 @@ On startup, an existing snapshot is decoded and normalized. Unknown or
 conflicting map indexes are not silently invented; invalid JSON or a negative
 revision stops the process before HTTP serving begins.
 
+## Audit Trail
+
+Successful business writes append one JSON object per affected aggregate to
+`<data-directory>/audit.jsonl`. Entries are appended while the snapshot write
+lock is held immediately after the business commit, so audit sequence order is
+the durable business commit order even under concurrent requests. The whole
+batch for one operation is written with a single `O_APPEND` write and then
+`fsync`ed; a mutex prevents interleaving, and sequence numbers are contiguous
+starting at 1.
+
+Audit recording is best effort and never changes the outcome of a business
+write: if the trail cannot be appended, the write still returns success and the
+failure is logged. A short or failed write fails the audit handle closed to
+avoid duplicate or missing sequence numbers; the next process start reconciles
+from disk. On startup the trail is read back, validated, and a corrupt file or
+a sequence gap stops the process before serving. The query interface is
+read-only; entries are never modified or deleted by the service.
+
 ## Repair-Ready Boundaries
 
 The baseline intentionally keeps several independent behavior surfaces visible
@@ -153,9 +197,18 @@ automated tests or request a focused repair without changing the public API.
 
 ## Test Boundary
 
-This stage does not create unit tests, integration tests, test fixtures, or an
-E2E suite. The later test task owns systematic coverage of validation limits,
-state transitions, concurrency, persistence failures, and numeric edge cases.
+The audit module ships with focused unit tests (contiguous sequences, filters,
+restart recovery, corrupt-trail rejection, concurrent appends) and HTTP-level
+tests (end-to-end recording, query validation, sensitive-field exclusion,
+restart attribution, and concurrent writes). Run them with:
+
+```bash
+go test ./...
+```
+
+Broader systematic coverage of validation limits, state transitions, and
+numeric edge cases outside the audit surface remains owned by a later test
+task.
 
 ## Scope
 
