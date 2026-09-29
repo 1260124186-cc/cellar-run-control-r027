@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/audit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/clock"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/config"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/httpapi"
@@ -61,7 +62,16 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	app := service.New(store, clock.System{})
+	auditLog, err := audit.Open(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := auditLog.Close(); err != nil {
+			log.Printf("close audit log: %v", err)
+		}
+	}()
+	app := service.New(store, clock.System{}, auditLog)
 	server := &http.Server{
 		Addr:              cfg.Address,
 		Handler:           httpapi.NewHandler(app),

@@ -1,8 +1,10 @@
 package service
 
 import (
+	"fmt"
 	"sort"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/audit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
 )
 
@@ -20,12 +22,14 @@ func (s *Service) CreateRun(input CreateRunInput) (domain.FermentationRun, error
 		Code:           code,
 		FormulaID:      input.FormulaID,
 		PlannedVolumeL: input.PlannedVolumeL,
-		Notes:          input.Notes,
-		State:          domain.RunPlanned,
-		Observations:   []domain.GravityObservation{},
-		Version:        1,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		// Notes are request-supplied free text and are intentionally left
+		// out of the audit record.
+		Notes:        input.Notes,
+		State:        domain.RunPlanned,
+		Observations: []domain.GravityObservation{},
+		Version:      1,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	if err := run.Validate(); err != nil {
 		return domain.FermentationRun{}, err
@@ -36,7 +40,7 @@ func (s *Service) CreateRun(input CreateRunInput) (domain.FermentationRun, error
 	}
 	run.ID = id
 
-	err = s.store.Execute(func(snapshot *domain.Snapshot) error {
+	err = s.commit(func(snapshot *domain.Snapshot) error {
 		formula, ok := snapshot.Formulas[run.FormulaID]
 		if !ok {
 			return domain.NewError(domain.CodeFormulaNotFound, "formula was not found")
@@ -52,6 +56,17 @@ func (s *Service) CreateRun(input CreateRunInput) (domain.FermentationRun, error
 		snapshot.Runs[run.ID] = run.Clone()
 		snapshot.RunIndex[run.Code] = run.ID
 		return nil
+	}, func() audit.Record {
+		return audit.Record{
+			Operation:     audit.OperationRunCreate,
+			TargetKind:    audit.KindRun,
+			TargetID:      run.ID,
+			VersionBefore: 0,
+			VersionAfter:  run.Version,
+			RecordedAt:    now,
+			Summary: fmt.Sprintf("run created; code=%s state=%s formula_id=%s volume_l=%g",
+				run.Code, run.State, run.FormulaID, run.PlannedVolumeL),
+		}
 	})
 	if err != nil {
 		return domain.FermentationRun{}, err
@@ -63,13 +78,16 @@ func (s *Service) ReserveRun(
 	id string,
 	input ReserveRunInput,
 ) (domain.FermentationRun, domain.Vessel, error) {
+	requestedAt := s.clock.Now()
 	var updatedRun domain.FermentationRun
 	var updatedVessel domain.Vessel
-	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
+	var before int64
+	err := s.commit(func(snapshot *domain.Snapshot) error {
 		run, ok := snapshot.Runs[id]
 		if !ok {
 			return domain.NewError(domain.CodeRunNotFound, "run was not found")
 		}
+		before = run.Version
 		if err := s.checkExpected(run.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
@@ -92,6 +110,17 @@ func (s *Service) ReserveRun(
 		updatedRun = run.Clone()
 		updatedVessel = vessel
 		return nil
+	}, func() audit.Record {
+		return audit.Record{
+			Operation:     audit.OperationRunReserve,
+			TargetKind:    audit.KindRun,
+			TargetID:      id,
+			VersionBefore: before,
+			VersionAfter:  updatedRun.Version,
+			RecordedAt:    requestedAt,
+			Summary: fmt.Sprintf("vessel reserved; state=%s vessel_id=%s vessel_state=%s",
+				updatedRun.State, updatedVessel.ID, updatedVessel.State),
+		}
 	})
 	if err != nil {
 		return domain.FermentationRun{}, domain.Vessel{}, err
@@ -103,13 +132,16 @@ func (s *Service) StartRun(
 	id string,
 	input VersionInput,
 ) (domain.FermentationRun, domain.Vessel, error) {
+	requestedAt := s.clock.Now()
 	var updatedRun domain.FermentationRun
 	var updatedVessel domain.Vessel
-	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
+	var before int64
+	err := s.commit(func(snapshot *domain.Snapshot) error {
 		run, ok := snapshot.Runs[id]
 		if !ok {
 			return domain.NewError(domain.CodeRunNotFound, "run was not found")
 		}
+		before = run.Version
 		if err := s.checkExpected(run.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
@@ -131,6 +163,17 @@ func (s *Service) StartRun(
 		updatedRun = run.Clone()
 		updatedVessel = vessel
 		return nil
+	}, func() audit.Record {
+		return audit.Record{
+			Operation:     audit.OperationRunStart,
+			TargetKind:    audit.KindRun,
+			TargetID:      id,
+			VersionBefore: before,
+			VersionAfter:  updatedRun.Version,
+			RecordedAt:    requestedAt,
+			Summary: fmt.Sprintf("fermentation started; state=%s vessel_id=%s vessel_state=%s",
+				updatedRun.State, updatedVessel.ID, updatedVessel.State),
+		}
 	})
 	if err != nil {
 		return domain.FermentationRun{}, domain.Vessel{}, err
@@ -142,13 +185,16 @@ func (s *Service) AbortRun(
 	id string,
 	input VersionInput,
 ) (domain.FermentationRun, domain.Vessel, error) {
+	requestedAt := s.clock.Now()
 	var updatedRun domain.FermentationRun
 	var updatedVessel domain.Vessel
-	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
+	var before int64
+	err := s.commit(func(snapshot *domain.Snapshot) error {
 		run, ok := snapshot.Runs[id]
 		if !ok {
 			return domain.NewError(domain.CodeRunNotFound, "run was not found")
 		}
+		before = run.Version
 		if err := s.checkExpected(run.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
@@ -174,6 +220,21 @@ func (s *Service) AbortRun(
 		snapshot.Runs[id] = run.Clone()
 		updatedRun = run.Clone()
 		return nil
+	}, func() audit.Record {
+		summary := fmt.Sprintf("run aborted; state=%s", updatedRun.State)
+		if updatedVessel.ID != "" {
+			summary = fmt.Sprintf("%s vessel_id=%s vessel_state=%s",
+				summary, updatedVessel.ID, updatedVessel.State)
+		}
+		return audit.Record{
+			Operation:     audit.OperationRunAbort,
+			TargetKind:    audit.KindRun,
+			TargetID:      id,
+			VersionBefore: before,
+			VersionAfter:  updatedRun.Version,
+			RecordedAt:    requestedAt,
+			Summary:       summary,
+		}
 	})
 	if err != nil {
 		return domain.FermentationRun{}, domain.Vessel{}, err

@@ -1,8 +1,10 @@
 package service
 
 import (
+	"fmt"
 	"sort"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/audit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
 )
 
@@ -25,7 +27,7 @@ func (s *Service) CreateVessel(input CreateVesselInput) (domain.Vessel, error) {
 	}
 	vessel.ID = id
 
-	err = s.store.Execute(func(snapshot *domain.Snapshot) error {
+	err = s.commit(func(snapshot *domain.Snapshot) error {
 		if _, exists := snapshot.VesselIndex[vessel.Code]; exists {
 			return domain.NewError(domain.CodeVesselConflict,
 				"a vessel with the same code already exists")
@@ -33,6 +35,16 @@ func (s *Service) CreateVessel(input CreateVesselInput) (domain.Vessel, error) {
 		snapshot.Vessels[vessel.ID] = vessel
 		snapshot.VesselIndex[vessel.Code] = vessel.ID
 		return nil
+	}, func() audit.Record {
+		return audit.Record{
+			Operation:     audit.OperationVesselCreate,
+			TargetKind:    audit.KindVessel,
+			TargetID:      vessel.ID,
+			VersionBefore: 0,
+			VersionAfter:  vessel.Version,
+			RecordedAt:    now,
+			Summary:       fmt.Sprintf("vessel created; state=%s", vessel.State),
+		}
 	})
 	if err != nil {
 		return domain.Vessel{}, err
@@ -81,12 +93,15 @@ func (s *Service) FinishCleaning(
 	id string,
 	input FinishCleaningInput,
 ) (domain.Vessel, error) {
+	requestedAt := s.clock.Now()
 	var updated domain.Vessel
-	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
+	var before int64
+	err := s.commit(func(snapshot *domain.Snapshot) error {
 		vessel, ok := snapshot.Vessels[id]
 		if !ok {
 			return domain.NewError(domain.CodeVesselNotFound, "vessel was not found")
 		}
+		before = vessel.Version
 		if err := s.checkExpected(vessel.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
@@ -109,6 +124,16 @@ func (s *Service) FinishCleaning(
 		snapshot.Vessels[id] = vessel
 		updated = vessel
 		return nil
+	}, func() audit.Record {
+		return audit.Record{
+			Operation:     audit.OperationVesselFinishCleaning,
+			TargetKind:    audit.KindVessel,
+			TargetID:      id,
+			VersionBefore: before,
+			VersionAfter:  updated.Version,
+			RecordedAt:    requestedAt,
+			Summary:       fmt.Sprintf("cleaning finished; state=%s", updated.State),
+		}
 	})
 	if err != nil {
 		return domain.Vessel{}, err
@@ -117,12 +142,15 @@ func (s *Service) FinishCleaning(
 }
 
 func (s *Service) RetireVessel(id string, input VersionInput) (domain.Vessel, error) {
+	requestedAt := s.clock.Now()
 	var updated domain.Vessel
-	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
+	var before int64
+	err := s.commit(func(snapshot *domain.Snapshot) error {
 		vessel, ok := snapshot.Vessels[id]
 		if !ok {
 			return domain.NewError(domain.CodeVesselNotFound, "vessel was not found")
 		}
+		before = vessel.Version
 		if err := s.checkExpected(vessel.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
@@ -132,6 +160,16 @@ func (s *Service) RetireVessel(id string, input VersionInput) (domain.Vessel, er
 		snapshot.Vessels[id] = vessel
 		updated = vessel
 		return nil
+	}, func() audit.Record {
+		return audit.Record{
+			Operation:     audit.OperationVesselRetire,
+			TargetKind:    audit.KindVessel,
+			TargetID:      id,
+			VersionBefore: before,
+			VersionAfter:  updated.Version,
+			RecordedAt:    requestedAt,
+			Summary:       fmt.Sprintf("vessel retired; state=%s", updated.State),
+		}
 	})
 	if err != nil {
 		return domain.Vessel{}, err

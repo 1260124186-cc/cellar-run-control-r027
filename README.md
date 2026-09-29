@@ -50,6 +50,7 @@ go run ./cmd/fermentctl serve
 
 ```text
 cmd/fermentctl                 service and workflow-check executable
+internal/audit                 append-only local audit log and read-only query
 internal/clock                 time boundary
 internal/config                environment configuration
 internal/domain                entities, validation, transitions, metrics
@@ -94,6 +95,24 @@ Run workflow:
 - `POST /v1/runs/{id}/complete`
 - `POST /v1/runs/{id}/abort`
 
+Audit (read-only):
+
+- `GET /v1/audit-entries`
+
+The audit endpoint returns every recorded successful write as one JSON entry
+with a globally increasing `sequence`, the `operation`, the `target_kind`
+(`formula`, `vessel`, or `run`) and `target_id`, the aggregate
+`version_before` and `version_after`, the UTC `recorded_at` request time, and
+a generated `summary`. It supports all combinations of these query
+parameters:
+
+- `target_kind` and `target_id`
+- `operation` (for example `run.append_observation`)
+- `from` and `to` as inclusive RFC3339 timestamps
+
+Results are always returned in sequence order. The endpoint cannot create,
+modify, or delete entries.
+
 Writes accept an optional `X-Expected-Version` header. Errors use a stable
 shape:
 
@@ -132,6 +151,28 @@ after that operation succeeds.
 On startup, an existing snapshot is decoded and normalized. Unknown or
 conflicting map indexes are not silently invented; invalid JSON or a negative
 revision stops the process before HTTP serving begins.
+
+### Audit Log
+
+Every successful business write also appends one JSON line to
+`<data-directory>/audit.log`. Each line records the operation, the target
+aggregate kind and id, the aggregate versions before and after the write, the
+request time, and a result summary. Entries never contain request-supplied
+free text (such as run notes or observation notes); summaries hold only
+generated identifiers, lifecycle states, versions, and computed numbers.
+
+The append and the business commit are serialized together, and each audit
+write is a single locked `write` followed by `fsync`, so concurrent requests
+cannot interleave bytes or produce gaps in the sequence. Sequence numbers are
+contiguous starting at 1; on startup the file is replayed in order and the
+last sequence continues, so both order and target attribution survive
+restarts. A malformed file or a gap in the sequence stops startup rather than
+truncating history. After a disk write error the log fails closed so a torn
+line is never followed by another entry.
+
+Appending to the audit log never changes the outcome of a business write: if
+the append fails, the write still returns success and the failure is reported
+on the process log instead.
 
 ## Repair-Ready Boundaries
 

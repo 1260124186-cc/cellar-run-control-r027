@@ -2,7 +2,9 @@ package service
 
 import (
 	"strings"
+	"sync"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/audit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/clock"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/storage"
@@ -11,13 +13,39 @@ import (
 type Service struct {
 	store *storage.Store
 	clock clock.Clock
+	audit *audit.Log
+	// writeMu serializes the business commit and the audit append as one
+	// unit. The store already serializes state writes, but a second mutex
+	// here ensures that the audit log observes successful writes in the same
+	// order they were committed, so concurrent requests can never produce
+	// audit entries whose sequence order disagrees with state revision order.
+	writeMu sync.Mutex
 }
 
-func New(store *storage.Store, timeSource clock.Clock) *Service {
+func New(store *storage.Store, timeSource clock.Clock, auditLog *audit.Log) *Service {
 	if timeSource == nil {
 		timeSource = clock.System{}
 	}
-	return &Service{store: store, clock: timeSource}
+	return &Service{store: store, clock: timeSource, audit: auditLog}
+}
+
+// commit runs mutator against the store and, on success, builds and appends
+// one audit record. buildRecord runs after the state commit succeeds but
+// before the lock is released, reading the versions captured by mutator.
+// Audit failure is logged but does not change the successful result of the
+// business write. Holding writeMu across both steps keeps audit order aligned
+// with commit order under concurrency.
+func (s *Service) commit(
+	mutator func(*domain.Snapshot) error,
+	buildRecord func() audit.Record,
+) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.store.Execute(mutator); err != nil {
+		return err
+	}
+	s.recordAudit(buildRecord())
+	return nil
 }
 
 func (s *Service) Revision() int64 {

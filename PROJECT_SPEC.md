@@ -159,6 +159,8 @@ domain rules, and snapshot storage.
 - `internal/domain`: entities, validation, state transitions, and metrics.
 - `internal/service`: use-case orchestration and revision coordination.
 - `internal/storage`: snapshot repository, atomic replacement, and locking.
+- `internal/audit`: append-only local audit log of successful business writes
+  and the read-only query interface.
 - `internal/httpapi`: routing, strict JSON decoding, error mapping, and health.
 - `internal/workflowcheck`: real HTTP workflow checks used by the executable.
 
@@ -197,6 +199,19 @@ The configured data directory contains `state.json`. Writes are serialized by
 an in-process mutex. The complete state is encoded, committed to durable
 storage, and then atomically renamed over the target. An update is not
 published in memory unless persistence succeeds.
+
+The data directory also contains `audit.log`, an append-only JSON-lines audit
+trail. Every successful business write appends one entry with the operation
+type, target kind and id, the aggregate versions before and after, the request
+time, and a generated result summary. Request-supplied free text (run notes,
+observation notes) is never recorded. The business commit and audit append are
+serialized together and each append is one locked write plus fsync, so
+concurrent writes cannot interleave or skip sequence numbers. The sequence is
+contiguous from 1 and replayed on startup, keeping order and attribution
+stable across restarts; a corrupt or non-contiguous log stops startup. Audit
+append failure never changes the success semantics of a business write. Audit
+history is exposed read-only at `GET /v1/audit-entries`, filtered by target,
+inclusive time range, and operation.
 
 Reads use copied values and never expose repository-owned maps or slices. The
 default address is `127.0.0.1:8088`, the request body limit is 1 MiB, and all

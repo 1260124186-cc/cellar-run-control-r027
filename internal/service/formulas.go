@@ -1,9 +1,11 @@
 package service
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/audit"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
 )
 
@@ -34,7 +36,7 @@ func (s *Service) CreateFormula(input CreateFormulaInput) (domain.Formula, error
 	formula.ID = id
 	nameKey := domain.NameKey(formula.Name)
 
-	err = s.store.Execute(func(snapshot *domain.Snapshot) error {
+	err = s.commit(func(snapshot *domain.Snapshot) error {
 		if _, exists := snapshot.NameIndex[nameKey]; exists {
 			return domain.NewError(domain.CodeFormulaNameConflict,
 				"a formula with the same normalized name already exists")
@@ -42,6 +44,16 @@ func (s *Service) CreateFormula(input CreateFormulaInput) (domain.Formula, error
 		snapshot.Formulas[formula.ID] = formula
 		snapshot.NameIndex[nameKey] = formula.ID
 		return nil
+	}, func() audit.Record {
+		return audit.Record{
+			Operation:     audit.OperationFormulaCreate,
+			TargetKind:    audit.KindFormula,
+			TargetID:      formula.ID,
+			VersionBefore: 0,
+			VersionAfter:  formula.Version,
+			RecordedAt:    now,
+			Summary:       fmt.Sprintf("formula created; state=%s", formula.State),
+		}
 	})
 	if err != nil {
 		return domain.Formula{}, err
@@ -53,12 +65,15 @@ func (s *Service) SetFormulaSteps(
 	id string,
 	input SetFormulaStepsInput,
 ) (domain.Formula, error) {
+	requestedAt := s.clock.Now()
 	var updated domain.Formula
-	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
+	var before int64
+	err := s.commit(func(snapshot *domain.Snapshot) error {
 		formula, ok := snapshot.Formulas[id]
 		if !ok {
 			return domain.NewError(domain.CodeFormulaNotFound, "formula was not found")
 		}
+		before = formula.Version
 		if err := s.checkExpected(formula.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
@@ -69,6 +84,17 @@ func (s *Service) SetFormulaSteps(
 		snapshot.Formulas[id] = formula
 		updated = formula.Clone()
 		return nil
+	}, func() audit.Record {
+		return audit.Record{
+			Operation:     audit.OperationFormulaSetSteps,
+			TargetKind:    audit.KindFormula,
+			TargetID:      id,
+			VersionBefore: before,
+			VersionAfter:  updated.Version,
+			RecordedAt:    requestedAt,
+			Summary: fmt.Sprintf("process steps replaced; steps=%d state=%s",
+				len(updated.Steps), updated.State),
+		}
 	})
 	if err != nil {
 		return domain.Formula{}, err
@@ -77,12 +103,15 @@ func (s *Service) SetFormulaSteps(
 }
 
 func (s *Service) ApproveFormula(id string, input VersionInput) (domain.Formula, error) {
+	requestedAt := s.clock.Now()
 	var updated domain.Formula
-	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
+	var before int64
+	err := s.commit(func(snapshot *domain.Snapshot) error {
 		formula, ok := snapshot.Formulas[id]
 		if !ok {
 			return domain.NewError(domain.CodeFormulaNotFound, "formula was not found")
 		}
+		before = formula.Version
 		if err := s.checkExpected(formula.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
@@ -92,6 +121,16 @@ func (s *Service) ApproveFormula(id string, input VersionInput) (domain.Formula,
 		snapshot.Formulas[id] = formula
 		updated = formula.Clone()
 		return nil
+	}, func() audit.Record {
+		return audit.Record{
+			Operation:     audit.OperationFormulaApprove,
+			TargetKind:    audit.KindFormula,
+			TargetID:      id,
+			VersionBefore: before,
+			VersionAfter:  updated.Version,
+			RecordedAt:    requestedAt,
+			Summary:       fmt.Sprintf("formula approved; state=%s", updated.State),
+		}
 	})
 	if err != nil {
 		return domain.Formula{}, err
@@ -100,12 +139,15 @@ func (s *Service) ApproveFormula(id string, input VersionInput) (domain.Formula,
 }
 
 func (s *Service) RetireFormula(id string, input VersionInput) (domain.Formula, error) {
+	requestedAt := s.clock.Now()
 	var updated domain.Formula
-	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
+	var before int64
+	err := s.commit(func(snapshot *domain.Snapshot) error {
 		formula, ok := snapshot.Formulas[id]
 		if !ok {
 			return domain.NewError(domain.CodeFormulaNotFound, "formula was not found")
 		}
+		before = formula.Version
 		if err := s.checkExpected(formula.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
@@ -122,6 +164,16 @@ func (s *Service) RetireFormula(id string, input VersionInput) (domain.Formula, 
 		snapshot.Formulas[id] = formula
 		updated = formula.Clone()
 		return nil
+	}, func() audit.Record {
+		return audit.Record{
+			Operation:     audit.OperationFormulaRetire,
+			TargetKind:    audit.KindFormula,
+			TargetID:      id,
+			VersionBefore: before,
+			VersionAfter:  updated.Version,
+			RecordedAt:    requestedAt,
+			Summary:       fmt.Sprintf("formula retired; state=%s", updated.State),
+		}
 	})
 	if err != nil {
 		return domain.Formula{}, err
